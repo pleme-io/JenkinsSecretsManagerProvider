@@ -1,0 +1,6 @@
+<?jelly escape-by-default='true'?>
+<div>
+    Access credentials from Akeyless in Jenkins as CredentialsProvider (like AWS Secrets Manager Credentials Provider).
+    Supports all Akeyless authentication methods via the Akeyless plugin.
+    Configure at <a href="${rootURL}/configure">Manage Jenkins → Configure System</a> (Akeyless Credentials Provider section).
+</div>

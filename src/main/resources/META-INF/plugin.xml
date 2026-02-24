@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<plugin>
+  <groupId>io.jenkins.plugins</groupId>
+  <artifactId>akeyless-credentials-provider</artifactId>
+  <version>${project.version}</version>
+  <shortName>Akeyless Credentials Provider</shortName>
+  <url>https://github.com/jenkinsci/akeyless-credentials-provider-plugin</url>
+  <displayName>Akeyless Credentials Provider</displayName>
+  <description>Access credentials from Akeyless in Jenkins as a CredentialsProvider (read-only). Secrets appear in the Jenkins credential store and can be used in pipelines with credentials(). Uses the same authentication methods as the Akeyless plugin (API Key, AWS IAM, Azure AD, GCP, Kubernetes, Universal Identity, Certificate, Email).</description>
+  <dependencies>
+    <dependency>
+      <groupId>io.jenkins.plugins</groupId>
+      <artifactId>akeyless</artifactId>
+      <version>62.vb_05cea_69ed08</version>
+    </dependency>
+  </dependencies>
+</plugin>
