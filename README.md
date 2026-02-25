@@ -4,11 +4,10 @@ A Jenkins plugin that provides **CredentialsProvider** integration with [Akeyles
 
 ## Features
 
-- **Read-only** view of Akeyless static secrets as Jenkins credentials
+- **Read-only** view of Akeyless secrets as Jenkins credentials
 - **CredentialsProvider** API support: credentials appear in the global store and in pipeline `credentials()` / `withCredentials`
-- **Standalone** — authenticates directly with API Key (access_id / access_key) stored in the plugin config (encrypted). No external plugin dependencies.
-- Optional **path prefix** to limit which secrets are listed
-- **Tag-based credential types**: use Akeyless tags to map secrets to Secret Text, Username/Password, SSH Key, Certificate, or Secret File
+- **User-provided paths**: you configure the list of Akeyless secret paths; only **get-secret-value** is used (via SDK). No listing.
+- **Standalone** — authenticates with your chosen method (API Key, Kubernetes, GCP, etc.) stored in the plugin config. No external plugin dependencies.
 
 ## Requirements
 
@@ -18,31 +17,22 @@ A Jenkins plugin that provides **CredentialsProvider** integration with [Akeyles
 
 1. Install **Akeyless Credentials Provider** (this plugin).
 2. Configure: **Manage Jenkins → Configure System** → find **Akeyless Credentials Provider** and set:
-   - **Akeyless URL**: Your Akeyless gateway URL including `/api/v2` (e.g. `https://my-gateway.akeyless.io/api/v2`).
-   - **Access ID**: Your Akeyless access ID (e.g. `p-abc123`).
-   - **Access Key**: Your Akeyless access key (stored encrypted by Jenkins).
-   - **Path prefix (optional)**: Leave empty to list all static secrets, or set a path (e.g. `/jenkins/prod`) to limit which secrets are exposed.
+   - **Akeyless URL**: Your Akeyless gateway API URL (used as-is; no suffix is added). If behind a load balancer, use the full URL including path (e.g. `https://gateway.example.com/api/v2`).
+   - **Access ID**: Your Akeyless access ID (e.g. `p-abc123`), if required by your auth method.
+   - **Authentication Method**: e.g. API Key, Kubernetes, GCP, etc.
+   - **Folder path** (e.g. `/CICD/jenkins/test/test3`) and **Secret names** (one per line, e.g. `jenkinsai`). In the job use `credentials('jenkinsai')`. Full path = folder + name; no listing.
+   - Or **Secret paths**: full path to each secret (one per line). No listing.
    Click **Save**.
 
-**When does Jenkins call Akeyless?** Jenkins contacts Akeyless when it needs to list or resolve credentials: e.g. when you open **Manage Jenkins → Credentials**, when a pipeline runs and uses `credentials('id')`, etc. In the Jenkins log you should see lines like `Akeyless Credentials Provider: listing secrets from Akeyless` and `listed N credential(s) from Akeyless`.
+**When does Jenkins call Akeyless?** Jenkins contacts Akeyless when resolving credentials: e.g. when you open **Manage Jenkins → Credentials**, or when a pipeline runs and uses `credentials('id')`. Only **get-secret-value** is used (via the Akeyless SDK); no listing.
 
 ## Usage
 
-### Tagging secrets in Akeyless
+**Folder path + Secret names:** Set **Folder path** to e.g. `/CICD/jenkins/test/test3` and **Secret names** to one name per line (e.g. `jenkinsai`). In the job use `credentials('jenkinsai')`. The plugin calls get-secret-value for `/CICD/jenkins/test/test3/jenkinsai`; no listing.
 
-For a secret to appear as a specific Jenkins credential type, tag it in Akeyless with:
+**Secret paths (optional):** Or list full paths (one per line); then you can use the short name or full path as `credentialsId`.
 
-| Jenkins type        | Tag key                 | Tag value           | Optional tags                          |
-|---------------------|-------------------------|---------------------|----------------------------------------|
-| Secret Text         | `jenkins:credentials:type` | `string`            | —                                      |
-| Username/Password   | `jenkins:credentials:type` | `usernamePassword`  | `jenkins:credentials:username` = username |
-| SSH User Private Key| `jenkins:credentials:type` | `sshUserPrivateKey` | `jenkins:credentials:username`        |
-| Certificate         | `jenkins:credentials:type` | `certificate`       | —                                      |
-| Secret File         | `jenkins:credentials:type` | `file`              | `jenkins:credentials:filename`        |
-
-If no `jenkins:credentials:type` tag is set, the secret is treated as **Secret Text**.
-
-Credential IDs are **relative to the path prefix** when one is set. With path prefix `/CICD/jenkins`, a secret at `/CICD/jenkins/apikey` gets ID **`apikey`**, and a secret at `/CICD/jenkins/test/test3/jenkinsai` gets ID **`test/test3/jenkinsai`**. With no path prefix, the full path is used (e.g. `/CICD/jenkins/apikey` → `CICD/jenkins/apikey`). You can confirm the ID in **Manage Jenkins → Credentials** or in the credential picker when editing a pipeline.
+Confirm the IDs in **Manage Jenkins → Credentials** or in the credential picker when editing a pipeline.
 
 ### Pipeline examples
 
@@ -76,10 +66,10 @@ node {
 
 ## Configuration
 
-- **Akeyless URL**: Gateway URL including `/api/v2` (e.g. `https://my-gateway.akeyless.io/api/v2`).
-- **Access ID**: Your Akeyless access ID (e.g. `p-abc123`).
-- **Access Key**: Your Akeyless access key (stored encrypted by Jenkins).
-- **Path prefix (optional)**: Only list static secrets under this path (e.g. `/jenkins/prod`).
+- **Akeyless URL**: Gateway API URL (used as-is; no suffix added). Example: `https://my-gateway.akeyless.io` or `https://gateway.example.com/api/v2`.
+- **Access ID**: Your Akeyless access ID (e.g. `p-abc123`), if required by your auth method.
+- **Authentication Method**: API Key, Kubernetes, GCP, Azure AD, etc.
+- **Secret paths**: One Akeyless secret path per line (e.g. `/CICD/jenkins/apikey`). Only get-secret-value is used.
 
 ## Configuration as Code (CasC)
 
@@ -88,10 +78,11 @@ Example:
 ```yaml
 unclassified:
   akeylessCredentialsProviderConfig:
-    akeylessUrl: "https://my-gateway.akeyless.io/api/v2"
+    akeylessUrl: "https://my-gateway.akeyless.io"
     accessId: "p-abc123"
-    accessKey: "your-access-key"
-    pathPrefix: "/jenkins"
+    secretPaths: |
+      /CICD/jenkins/apikey
+      /CICD/jenkins/db-password
 ```
 
 ## Building

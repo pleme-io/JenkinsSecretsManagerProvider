@@ -1,134 +1,119 @@
 package io.jenkins.plugins.akeyless.credentials.provider.supplier;
 
 import com.cloudbees.plugins.credentials.common.StandardCredentials;
-import io.akeyless.client.ApiException;
-import io.jenkins.plugins.akeyless.credentials.provider.client.AkeylessClient;
 import io.jenkins.plugins.akeyless.credentials.provider.config.AkeylessCredentialsProviderConfig;
 import io.jenkins.plugins.akeyless.credentials.provider.factory.CredentialsFactory;
-import io.jenkins.plugins.akeyless.credentials.provider.client.AkeylessClient.AkeylessItem;
+import io.jenkins.plugins.akeyless.credentials.provider.factory.Tags;
+import io.jenkins.plugins.akeyless.credentials.provider.factory.Type;
 
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.List;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.logging.Level;
 import java.util.logging.Logger;
-import java.util.stream.Collectors;
+import java.util.regex.Pattern;
 
 /**
- * Supplies credentials by listing Akeyless items and mapping tagged items to Jenkins credentials.
+ * Supplies credentials from user-provided secret paths only. No listing; only get-secret-value is used (via SDK).
+ * In pipelines use short name (e.g. jenkinsai) or full path.
  */
 public class CredentialsSupplier {
 
     private static final Logger LOG = Logger.getLogger(CredentialsSupplier.class.getName());
+    private static final Pattern PATH_SPLIT = Pattern.compile("[,\n\r]+");
 
     public static Collection<StandardCredentials> get(AkeylessCredentialsProviderConfig config) {
         if (config == null || !config.isConfigured()) {
-            LOG.log(Level.FINE, "Akeyless Credentials Provider: config null or not configured (URL and credential ID required)");
+            LOG.log(Level.INFO, "Akeyless Credentials Provider: not configured (URL and auth required)");
             return Collections.emptyList();
         }
+        String folderPath = config.getFolderPath();
+        String secretNamesInput = config.getSecretNames();
+        String secretPathsInput = config.getSecretPaths();
+        boolean hasFolderAndNames = folderPath != null && !folderPath.isBlank()
+                && secretNamesInput != null && !secretNamesInput.isBlank();
+        boolean hasSecretPaths = secretPathsInput != null && !secretPathsInput.isBlank();
+        if (!hasFolderAndNames && !hasSecretPaths) {
+            LOG.log(Level.INFO, "Akeyless Credentials Provider: set ''Folder path'' + ''Secret names'', or ''Secret paths'', in Manage Jenkins → Configure System.");
+            return Collections.emptyList();
+        }
+        if (folderPath != null && !folderPath.isBlank() && (secretNamesInput == null || secretNamesInput.isBlank())) {
+            LOG.log(Level.WARNING, "Akeyless Credentials Provider: ''Folder path'' is set but ''Secret names'' is empty. Add secret names (e.g. jenkinsai) so you can use credentials('jenkinsai') in the job.");
+        }
         try {
-            AkeylessClient client = config.buildClient();
-            if (client == null) {
-                LOG.log(Level.WARNING, "Akeyless Credentials Provider: could not build client (check that the selected Akeyless credential exists and URL is correct)");
+            if (config.buildClient() == null) {
+                LOG.log(Level.WARNING, "Akeyless Credentials Provider: could not build client (check URL and auth)");
                 return Collections.emptyList();
             }
-            String pathPrefix = config.getPathPrefix();
-            LOG.log(Level.INFO, "Akeyless Credentials Provider: listing secrets from Akeyless (pathPrefix={0})", pathPrefix != null ? pathPrefix : "");
-            List<AkeylessItem> items = client.listItems(pathPrefix);
-            List<StandardCredentials> result = new ArrayList<>();
-            for (AkeylessItem item : items) {
-                // Full path for get-secret-value (same as CLI: akeyless get-secret-value --name /CICD/jenkins/apikey)
-                String akeylessPath = fullPathForApi(item);
-                // Use full path for ID derivation so prefix stripping yields correct relative path
-                String pathForId = akeylessPath != null ? akeylessPath : item.getName();
-                // When path prefix is set, credential ID is relative to it (e.g. prefix /CICD/jenkins + path /CICD/jenkins/apikey -> id "apikey")
-                String id = credentialIdFromPath(pathForId, pathPrefix);
-                if (id == null) continue;
-                Map<String, String> tags = client.getTags(akeylessPath);
-                // Always use a mutable copy; getTags() may return an unmodifiable map (e.g. emptyMap()).
-                Map<String, String> tagsForFactory = new HashMap<>(tags);
-                if (tagsForFactory.getOrDefault(io.jenkins.plugins.akeyless.credentials.provider.factory.Tags.TYPE, "").isEmpty()) {
-                    tagsForFactory.put(io.jenkins.plugins.akeyless.credentials.provider.factory.Tags.TYPE,
-                            io.jenkins.plugins.akeyless.credentials.provider.factory.Type.STRING);
-                }
-                Optional<StandardCredentials> cred = CredentialsFactory.create(id, akeylessPath, item.getPath(), tagsForFactory);
-                cred.ifPresent(result::add);
-                // Register alternate ID forms so jobs can use any of:
-                //   "test/test3/jenkinsai"  (relative, no leading /)
-                //   "/test/test3/jenkinsai" (relative, with leading /)
-                //   "/CICD/jenkins/test/test3/jenkinsai" (full path including prefix)
-                //   "CICD/jenkins/test/test3/jenkinsai"  (full path without leading /)
-                java.util.Set<String> registered = new java.util.HashSet<>();
-                registered.add(id);
-                String withSlash = id.startsWith("/") ? id : "/" + id;
-                String withoutSlash = id.startsWith("/") ? id.substring(1) : id;
-                for (String altId : new String[]{withSlash, withoutSlash}) {
-                    if (registered.add(altId)) {
-                        CredentialsFactory.create(altId, akeylessPath, item.getPath(), tagsForFactory).ifPresent(result::add);
+            Map<String, String> defaultTags = new HashMap<>();
+            defaultTags.put(Tags.TYPE, Type.STRING);
+
+            Collection<StandardCredentials> result = new ArrayList<>();
+
+            // 1) Folder path (no secret name) + secret names: full path = folderPath + "/" + secretName.
+            //    Secret name is the credential id used in the pipeline (e.g. credentials('jenkinsai')).
+            if (hasFolderAndNames) {
+                String folderNorm = folderPath.trim().replaceAll("/+$", "");
+                if (!folderNorm.startsWith("/")) folderNorm = "/" + folderNorm;
+                String[] names = PATH_SPLIT.split(secretNamesInput);
+                for (String raw : names) {
+                    String name = raw.trim();
+                    if (name.isEmpty()) continue;
+                    String fullPath = folderNorm + "/" + name.replaceAll("^/+", "");  // e.g. /CICD/jenkins/test/test3/jenkinsai
+                    String id = credentialIdFromPath(name);
+                    if (id != null) {
+                        CredentialsFactory.create(id, fullPath, fullPath, defaultTags).ifPresent(result::add);
+                        LOG.log(Level.INFO, "Akeyless Credentials Provider: folder+name credential id={0} path={1}", new Object[]{id, fullPath});
                     }
                 }
-                // Full path forms (with prefix re-included)
-                String fullPath = akeylessPath != null ? akeylessPath.replaceAll("^/+|/+$", "") : null;
-                if (fullPath != null && !fullPath.isEmpty()) {
-                    for (String altId : new String[]{fullPath, "/" + fullPath}) {
-                        if (registered.add(altId)) {
-                            CredentialsFactory.create(altId, akeylessPath, item.getPath(), tagsForFactory).ifPresent(result::add);
-                        }
-                    }
-                }
-                LOG.log(Level.INFO, "Akeyless Credentials Provider: registered IDs for {0}: {1}", new Object[]{akeylessPath, registered});
             }
-            LOG.log(Level.INFO, "Akeyless Credentials Provider: listed {0} credential(s) from Akeyless", result.size());
+
+            // 2) Explicit full secret paths (and pathPrefix fallback)
+            if (hasSecretPaths) {
+                String[] rawPaths = PATH_SPLIT.split(secretPathsInput);
+                for (String raw : rawPaths) {
+                    String path = raw.trim();
+                    if (path.isEmpty()) continue;
+                    String akeylessPath = path.startsWith("/") ? path : "/" + path;
+                    addCredentialVariants(result, akeylessPath, akeylessPath, defaultTags);
+                }
+            }
+
+            if (!result.isEmpty()) {
+                Set<String> ids = new HashSet<>();
+                for (StandardCredentials c : result) ids.add(c.getId());
+                LOG.log(Level.INFO, "Akeyless Credentials Provider: {0} credential(s), ids={1}", new Object[]{result.size(), ids});
+            }
             return result;
-        } catch (ApiException e) {
-            LOG.log(Level.WARNING, "Akeyless Credentials Provider: could not list credentials from Akeyless: " + e.getMessage(), e);
-            return Collections.emptyList();
         } catch (Exception e) {
             LOG.log(Level.WARNING, "Error loading Akeyless credentials", e);
             return Collections.emptyList();
         }
     }
 
-    /** Full Akeyless path for get-secret-value API (e.g. /CICD/jenkins/apikey). Prefer item path, then name; ensure leading /. */
-    private static String fullPathForApi(AkeylessItem item) {
-        String p = (item.getPath() != null && !item.getPath().isEmpty()) ? item.getPath() : item.getName();
-        if (p == null || p.isEmpty()) return p;
-        p = p.trim();
-        return p.startsWith("/") ? p : "/" + p;
-    }
-
-    /**
-     * Jenkins credential ID from path. If pathPrefix is set, the ID is relative to it so you can use
-     * short IDs in jobs (e.g. prefix /CICD/jenkins + path /CICD/jenkins/apikey -> id "apikey").
-     * Otherwise the full path is used (e.g. /CICD/jenkins/apikey -> CICD_jenkins_apikey).
-     * IDs are sanitized to [a-zA-Z0-9_.-].
-     */
-    private static String credentialIdFromPath(String path, String pathPrefix) {
-        if (path == null || path.isEmpty()) return null;
-        String pathNorm = path.trim().replaceAll("/+$", "");
-        String toUse = pathNorm;
-        if (pathPrefix != null && !pathPrefix.isEmpty()) {
-            String prefixNorm = pathPrefix.trim().replaceAll("/+$", "");
-            if (!prefixNorm.isEmpty()) {
-                String pathWithLead = pathNorm.startsWith("/") ? pathNorm : "/" + pathNorm;
-                String prefixWithLead = prefixNorm.startsWith("/") ? prefixNorm : "/" + prefixNorm;
-                if (pathWithLead.equals(prefixWithLead) || pathWithLead.startsWith(prefixWithLead + "/")) {
-                    String suffix = pathWithLead.substring(prefixWithLead.length());
-                    suffix = suffix.replaceAll("^/+|/+$", "");
-                    toUse = suffix.isEmpty() ? pathNorm : suffix;
-                }
+    /** Add one credential for the given path; register short name (last segment) and full path variants. */
+    private static void addCredentialVariants(Collection<StandardCredentials> result, String akeylessPath, String description, Map<String, String> defaultTags) {
+        Set<String> registered = new HashSet<>();
+        String lastSeg = lastPathSegment(akeylessPath);
+        if (lastSeg != null && registered.add(lastSeg)) {
+            CredentialsFactory.create(lastSeg, akeylessPath, description, defaultTags).ifPresent(result::add);
+        }
+        String fullNorm = akeylessPath.replaceAll("^/+|/+$", "");
+        for (String altId : new String[]{fullNorm, "/" + fullNorm}) {
+            if (registered.add(altId)) {
+                CredentialsFactory.create(altId, akeylessPath, description, defaultTags).ifPresent(result::add);
             }
         }
-        return credentialIdFromPath(toUse);
+        LOG.log(Level.FINE, "Akeyless Credentials Provider: registered IDs for {0}: {1}", new Object[]{akeylessPath, registered});
     }
 
     /**
-     * Credential ID keeps the path structure with slashes (e.g. test/test3/jenkinsai).
-     * Only strips leading/trailing slashes and removes unsafe characters.
+     * Credential ID from path: strips leading/trailing slashes and sanitizes to [a-zA-Z0-9/_.-].
      */
     private static String credentialIdFromPath(String path) {
         if (path == null || path.isEmpty()) return null;
@@ -138,5 +123,15 @@ public class CredentialsSupplier {
             trimmed = trimmed.replaceAll("[^a-zA-Z0-9/_.-]", "_");
         }
         return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    /** Last segment of path (e.g. /CICD/jenkins/test/test3/jenkinsai → jenkinsai) for use as short credential ID. */
+    private static String lastPathSegment(String path) {
+        if (path == null || path.isEmpty()) return null;
+        String trimmed = path.replaceAll("/+$", "").trim();
+        int last = trimmed.lastIndexOf('/');
+        if (last < 0) return credentialIdFromPath(trimmed);
+        String segment = trimmed.substring(last + 1);
+        return segment.isEmpty() ? null : credentialIdFromPath(segment);
     }
 }

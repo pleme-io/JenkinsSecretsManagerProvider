@@ -25,6 +25,13 @@ public class AkeylessCredentialsProviderConfig extends jenkins.model.GlobalConfi
     private String akeylessUrl;
     private String accessId;
     private AuthMethod authMethod;
+    /** Folder path: secrets are at folderPath + "/" + secretName. No listing. */
+    private String folderPath;
+    /** Secret names under the folder (one per line). In the job use credentials('secretName'). */
+    private String secretNames;
+    /** Full secret paths (one per line). Alternative to folder + names; no listing. */
+    private String secretPaths;
+    /** @deprecated use folderPath or secretPaths; kept for backward compatibility */
     private String pathPrefix;
 
     public String getAkeylessUrl() { return akeylessUrl; }
@@ -42,6 +49,30 @@ public class AkeylessCredentialsProviderConfig extends jenkins.model.GlobalConfi
     @DataBoundSetter
     public void setAuthMethod(AuthMethod authMethod) { this.authMethod = authMethod; }
 
+    /** Folder path; when not set, pathPrefix is used (so old config works as folder path). */
+    public String getFolderPath() {
+        if (folderPath != null && !folderPath.isBlank()) return folderPath;
+        if (pathPrefix != null && !pathPrefix.isBlank()) return pathPrefix;
+        return folderPath;
+    }
+
+    @DataBoundSetter
+    public void setFolderPath(String folderPath) { this.folderPath = folderPath; }
+
+    public String getSecretNames() { return secretNames; }
+
+    @DataBoundSetter
+    public void setSecretNames(String secretNames) { this.secretNames = secretNames; }
+
+    /** Full secret paths only (one per line). pathPrefix is not used here — it is used as folder path when Folder path is empty. */
+    public String getSecretPaths() {
+        return secretPaths;
+    }
+
+    @DataBoundSetter
+    public void setSecretPaths(String secretPaths) { this.secretPaths = secretPaths; }
+
+    /** @deprecated use folderPath or secretPaths */
     public String getPathPrefix() { return pathPrefix; }
 
     @DataBoundSetter
@@ -57,9 +88,6 @@ public class AkeylessCredentialsProviderConfig extends jenkins.model.GlobalConfi
     public AkeylessClient buildClient() {
         if (!isConfigured()) return null;
         String url = akeylessUrl.trim();
-        if (!url.endsWith("/api/v2") && !url.endsWith("/api/v2/")) {
-            url = url.endsWith("/") ? url + "api/v2" : url + "/api/v2";
-        }
         return new AkeylessClient(url, accessId != null ? accessId.trim() : null, authMethod);
     }
 
