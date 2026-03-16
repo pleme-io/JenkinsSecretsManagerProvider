@@ -19,7 +19,7 @@
         pname = "akeyless-credentials-provider";
         version = "0.0.0-dev";
         src = self;
-        mvnHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="; # TODO: set correct hash
+        mvnHash = ""; # requires nix build to compute
         description = "Akeyless Credentials Provider for Jenkins — access credentials from Akeyless as a CredentialsProvider";
         homepage = "https://github.com/pleme-io/JenkinsSecretsManagerProvider";
       };
